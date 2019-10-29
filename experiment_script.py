@@ -1,6 +1,8 @@
+import multiprocessing
+from time import time
+
 import numpy as np
 import networkx as nx
-import matplotlib.pyplot as plt
 from sys import exit
 from utils import *
 
@@ -15,7 +17,7 @@ nvars = 2  # number of choice variants
 # ----------------------------------------------------------
 
 # specify community net
-net = nx.complete_graph(200)
+net = nx.complete_graph(10)
 setattr(net, 'nvars', nvars)  # associte 'nvars' with 'net'
 
 # set parameters of community actors
@@ -61,17 +63,19 @@ def simulate_dialog(alice, bob) :
     for v in range(net.nvars):
         wA_result[v] = D[0, 0] * wA[v] + D[0, 1] * wB[v]
         wB_result[v] = D[1, 0] * wA[v] + D[1, 1] * wB[v]
-    return wA_result, wB_result
+    return (alice, wA_result), (bob, wB_result)
 
 
 #
-def simulate_session():
+def simulate_session(pool):
     global net
 # clean auxiliary information
     for channel in net.edges:
         for ic in channel:
             net.nodes[ic]['result_list'][:] = []
 # simulate session dialogues
+    tasks = []
+
     for channel in net.edges:
         if not Bernoulli_trial(net.edges[channel]['a']):
         # channel is not active
@@ -82,9 +86,22 @@ def simulate_session():
     # current dialogue
         alice, bob = min(channel), max(channel)
     # ------------------------------------------------------
-        wA, wB = simulate_dialog(alice, bob)
+
+        if pool is not None:
+            task = pool.apply_async(simulate_dialog, (alice, bob))
+            tasks.append(task)
+        else:
+            (alice, wA), (bob, wB) = simulate_dialog(alice, bob)
+
+            net.nodes[alice]['result_list'].append(wA)
+            net.nodes[bob]['result_list'].append(wB)
+
+    for task in tasks:
+        (alice, wA), (bob, wB) = task.get()
+
         net.nodes[alice]['result_list'].append(wA)
         net.nodes[bob]['result_list'].append(wB)
+
 # compute the previous session result for each community actor
     for n in net:
         if net.nodes[n]['result_list']:
@@ -119,7 +136,7 @@ def observation():
     DP = len([1 for n in net
             if net.nodes[n]['choice'] == DISCLAIMER])
     if DP == net.number_of_nodes():
-    # all community actors disclaimed a choice 
+    # all community actors disclaimed a choice
         return W, 1.0, uncertainty(net.nvars)
     NP = net.number_of_nodes() - DP
     WP = net.nvars * [None]
@@ -144,26 +161,36 @@ for n in net:
     else:
         net.nodes[n]['w'] = uncertainty(net.nvars)
 
-niter = 1000  # define number of iterations
 
-# set up the experiment
+if __name__ == '__main__':
+    niter = 1000  # define number of iterations
 
-protocol = [observation()]
-for istep in range(niter):
-    simulate_session()
-    protocol.append(observation())
+    multiprocessing.freeze_support()
+    pool = multiprocessing.Pool(processes=4)
 
+    # set up the experiment
 
-# ----------------------------------------------------------
-# store the experiment outcomes
-# ----------------------------------------------------------
-out_file = open("protocol.dat", "w")
-# out_file.write(str(net.nvars) + "\n")
-for item in protocol:
-    for val in item[0]:
-        out_file.write(str(val) + " ")
-    out_file.write(str(item[1]))
-    for val in item[2]:
-        out_file.write(" " + str(val))
-    out_file.write("\n")
-out_file.close()
+    s = time()
+
+    protocol = [observation()]
+    for istep in range(niter):
+        simulate_session(pool)
+        protocol.append(observation())
+        print(istep)
+
+    t = time()
+    print('elapsed:', t - s)
+
+    # ----------------------------------------------------------
+    # store the experiment outcomes
+    # ----------------------------------------------------------
+    out_file = open("protocol.dat", "w")
+    # out_file.write(str(net.nvars) + "\n")
+    for item in protocol:
+        for val in item[0]:
+            out_file.write(str(val) + " ")
+        out_file.write(str(item[1]))
+        for val in item[2]:
+            out_file.write(" " + str(val))
+        out_file.write("\n")
+    out_file.close()
